@@ -1,0 +1,15 @@
+name: interface_viewer
+description: A new Flutter project
+
+environment:
+  sdk: '^3.9.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  mqtt_client: ^10.2.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/LogoBRIN.png      

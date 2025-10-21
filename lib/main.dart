@@ -70,8 +70,15 @@ class Telemetry {
 class Kontainer {
   final String series;
   String tujuan;
+  String isi;                      // <-- BARU: muatan/isi kontainer
+  String PT;
   Telemetry t = Telemetry();
-  Kontainer({required this.series, required this.tujuan});
+  Kontainer({
+    required this.series,
+    required this.tujuan,
+    this.isi = '-',       
+    required this.PT,        // default "-"
+  });
 }
 
 /* ===================== Page ===================== */
@@ -85,13 +92,16 @@ class _DashboardPageState extends State<DashboardPage> {
   // ---- MQTT config (ubah sesuai punyamu) ----
   final String brokerHost = '172.20.10.5';
   final int brokerPort = 1883;
-  final String baseTopic = 'supplychain/containers'; // kita subscribe "baseTopic/#"
+  final String baseTopic = 'supplychain/containers'; // subscribe "baseTopic/#"
 
   MqttServerClient? _client;
   bool _connected = false;
 
-  // daftar kontainer yg dimonitor, key = series
+  // daftar kontainer (key = series)
   final Map<String, Kontainer> _items = {};
+
+  // query pencarian
+  String _searchQuery = '';
 
   @override
   void initState() {
@@ -136,7 +146,7 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  // Cari SERIES dari topic .../<series> ATAU dari JSON: series/containerId
+  // Ambil SERIES dari topic .../<series> ATAU dari JSON: series/containerId
   String? _extractSeries(String topic, Map<String, dynamic> j) {
     final fromJson = (j['series'] ?? j['containerId'])?.toString();
     if (fromJson != null && fromJson.isNotEmpty) return fromJson;
@@ -156,7 +166,7 @@ class _DashboardPageState extends State<DashboardPage> {
       setState(() {
         final item = _items.putIfAbsent(
           series,
-          () => Kontainer(series: series, tujuan: '-'),
+          () => Kontainer(series: series, tujuan: '-', isi: '-', PT: '-'),
         );
         item.t.mergeFromJson(j);
       });
@@ -168,24 +178,41 @@ class _DashboardPageState extends State<DashboardPage> {
   void _addContainerDialog() {
     final seriesCtrl = TextEditingController();
     final tujuanCtrl = TextEditingController();
+    final isiCtrl = TextEditingController();   
+    final PTCtrl = TextEditingController();          // <-- BARU
+
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Tambah Kontainer'),
+        title: const Text('Tambah Data'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: seriesCtrl,
               decoration: const InputDecoration(
-                labelText: 'Series (mis. XX4028)',
+                labelText: 'Series (XX4028)',
               ),
             ),
             const SizedBox(height: 8),
             TextField(
               controller: tujuanCtrl,
               decoration: const InputDecoration(
-                labelText: 'Tujuan (mis. Semarang-Makassar)',
+                labelText: 'Tujuan (Semarang-Makassar)',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(                               // <-- BARU
+              controller: isiCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Isi (Pakaian, Elektronik, dll.)',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(                               // <-- BARU
+              controller: PTCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Perusahaan',
               ),
             ),
           ],
@@ -196,10 +223,22 @@ class _DashboardPageState extends State<DashboardPage> {
             onPressed: () {
               final s = seriesCtrl.text.trim();
               final t = tujuanCtrl.text.trim();
+              final i = isiCtrl.text.trim();        // <-- BARU
+              final p = PTCtrl.text.trim();        // <-- BARU
               if (s.isNotEmpty) {
                 setState(() {
-                  _items.putIfAbsent(s, () => Kontainer(series: s, tujuan: t.isEmpty ? '-' : t))
-                        .tujuan = t.isEmpty ? '-' : t;
+                  _items.putIfAbsent(
+                    s,
+                    () => Kontainer(
+                      series: s,
+                      tujuan: t.isEmpty ? '-' : t,
+                      isi: i.isEmpty ? '-' : i,      // <-- BARU
+                      PT: p.isEmpty ? '-' : i,
+                    ),
+                  )
+                  ..tujuan = t.isEmpty ? '-' : t
+                  ..isi    = i.isEmpty ? '-' : i    // <-- BARU
+                  ..PT    = p.isEmpty ? '-' : p;    // <-- BARU
                 });
               }
               Navigator.pop(context);
@@ -232,72 +271,92 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget build(BuildContext context) {
     const orange = Color(0xFFFF6A2A);
 
+    // filter berdasar pencarian
+    final filteredItems = _items.values
+        .where((k) => k.series.toLowerCase().contains(_searchQuery.toLowerCase()))
+        .toList();
+
     return Scaffold(
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(120),
         child: Container(
           color: Theme.of(context).colorScheme.surface,
-          padding: const EdgeInsets.only(top: 24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+          padding: const EdgeInsets.only(top: 24, left: 16, right: 16),
+          child: Stack(
             children: [
-              // ganti dengan logomu
-              Image.asset('assets/LogoBRIN.png', height: 42),
-              const SizedBox(height: 6),
-              const Text(
-                'Monitoring Posisi Kontainer',
-                style: TextStyle(
-                  fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: .3),
+              // Logo + judul di tengah
+              Align(
+                alignment: Alignment.topCenter,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.start,
+                  children: const [
+                    Image(image: AssetImage('assets/LogoBRIN.png'), height: 42),
+                    SizedBox(height: 6),
+                    Text(
+                      'Monitoring Posisi Kontainer',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: .3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // 🔍 Search bar kecil di pojok kanan atas
+              Positioned(
+                top: 10,
+                right: 0,
+                child: SizedBox(
+                  width: 150,
+                  height: 36,
+                  child: TextField(
+                    onChanged: (v) => setState(() => _searchQuery = v),
+                    decoration: InputDecoration(
+                      hintText: 'Cari series...',
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      prefixIcon: const Icon(Icons.search, size: 18),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
         ),
       ),
+
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(12),
-          child: _items.isEmpty
+          child: filteredItems.isEmpty
               ? const Center(
                   child: Text('Belum ada kontainer. Tekan tombol + untuk menambah.'),
                 )
-              : LayoutBuilder(
-                  builder: (context, constraints) {
-                    // Layout horizontal flow seperti contoh: kiri→kanan, lalu wrap
-                    const double minCardWidth = 420.0; // lebar minimum tiap frame
-                    const double spacing = 12.0;
-
-                    int columns = (constraints.maxWidth / minCardWidth).floor();
-                    if (columns < 1) columns = 1;
-
-                    final double totalSpacing = spacing * (columns - 1);
-                    final double cardWidth =
-                        (constraints.maxWidth - totalSpacing) / columns;
-
-                    return SingleChildScrollView(
-                      child: Wrap(
-                        spacing: spacing,
-                        runSpacing: spacing,
-                        children: _items.values.map((k) {
-                          return SizedBox(
-                            width: cardWidth,
-                            child: _ContainerCard(
-                              data: k,
-                              borderColor: orange,
-                              // 🔻 tombol hapus memanggil konfirmasi
-                              onDelete: () => _confirmDelete(k.series),
-                            ),
-                          );
-                        }).toList(),
-                      ),
+              : ListView.separated(
+                  itemCount: filteredItems.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (_, i) {
+                    final k = filteredItems[i];
+                    return _ContainerCard(
+                      data: k,
+                      borderColor: orange,
+                      onDelete: () => _confirmDelete(k.series),
+                      compact: true, // ringkas (2 baris)
                     );
                   },
                 ),
         ),
       ),
+
       floatingActionButton: FloatingActionButton(
         onPressed: _addContainerDialog,
         child: const Icon(Icons.add),
       ),
+
       bottomNavigationBar: Padding(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
         child: FilledButton.icon(
@@ -314,8 +373,14 @@ class _DashboardPageState extends State<DashboardPage> {
 class _ContainerCard extends StatelessWidget {
   final Kontainer data;
   final Color borderColor;
-  final VoidCallback? onDelete; // 🔻 tambahkan callback hapus
-  const _ContainerCard({required this.data, required this.borderColor, this.onDelete});
+  final VoidCallback? onDelete; // tombol hapus
+  final bool compact; // tampilkan 2 baris saja
+  const _ContainerCard({
+    required this.data,
+    required this.borderColor,
+    this.onDelete,
+    this.compact = false,
+  });
 
   String _s(dynamic v, {int f = 6}) {
     if (v == null) return '-';
@@ -327,69 +392,71 @@ class _ContainerCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = data.t;
 
+    // Line 1: Series | Tujuan | Isi | Waktu
+    final line1 =
+        'Series: ${data.series}  |  Tujuan: ${data.tujuan}  |  Isi: ${data.isi}  |  Perusahaan: ${data.PT}';
+
+    // Line 2: Paket & statistik
+    final line2 =
+        '${t.timeUTC ?? '-'} | Paket: ${t.packetCounter ?? '-'}  | Lat: ${_s(t.lat)} | Long: ${_s(t.lon)} | Alt: ${_s(t.alt)} | Spd: ${_s(t.speed)} | Door: ${t.door == null ? '-' : (t.door! ? 'OPEN' : 'CLOSED')} | RSSI: ${_s(t.rssi)} | SNR: ${_s(t.snr)} | SAT: ${_s(t.sats)}';
+
     return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
         decoration: BoxDecoration(
-          border: Border.all(color: borderColor, width: 2.5),
-          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: borderColor, width: 2.0),
+          borderRadius: BorderRadius.circular(14),
         ),
         child: Column(
           children: [
-            // ===== garis pembatas atas (lurus) =====
+            // garis pembatas atas
             Container(height: 2, color: borderColor),
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Baris judul + tombol hapus di kanan
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      _kv('Series', data.series),
-                      if (onDelete != null)
-                        IconButton(
-                          tooltip: 'Hapus kontainer',
-                          icon: const Icon(Icons.delete, size: 20, color: Colors.redAccent),
-                          onPressed: onDelete,
+                  // Isi 2 baris ringkas
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          line1,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
                         ),
-                    ],
+                        const SizedBox(height: 2),
+                        Text(
+                          line2,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.grey[800],
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  _kv('Tujuan', data.tujuan),
-                  const SizedBox(height: 6),
-                  Text(t.timeUTC ?? '-', style: TextStyle(color: Colors.grey[800])),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Paket ${t.packetCounter ?? '-'} | '
-                    'Lat: ${_s(t.lat)} | Long: ${_s(t.lon)} | Alt: ${_s(t.alt, f:1)}',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Spd: ${_s(t.speed, f:2)} | '
-                    'Door: ${t.door == null ? '-' : (t.door! ? 'OPEN' : 'CLOSED')} | '
-                    'RSSI: ${_s(t.rssi)} | SNR: ${_s(t.snr, f:1)} | SAT: ${_s(t.sats)}',
-                  ),
+                  // Tombol hapus (opsional)
+                  if (onDelete != null)
+                    IconButton(
+                      tooltip: 'Hapus kontainer',
+                      icon: const Icon(Icons.delete, size: 20, color: Colors.redAccent),
+                      onPressed: onDelete,
+                    ),
                 ],
               ),
             ),
-            // ===== garis pembatas bawah (lurus) =====
+            // garis pembatas bawah
             Container(height: 2, color: borderColor),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _kv(String k, String v) {
-    return RichText(
-      text: TextSpan(
-        style: const TextStyle(color: Colors.black87, fontSize: 14),
-        children: [
-          TextSpan(text: '$k: ', style: const TextStyle(fontWeight: FontWeight.bold)),
-          TextSpan(text: v),
-        ],
       ),
     );
   }

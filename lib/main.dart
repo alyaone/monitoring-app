@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:async';                            // <-- TAMBAHAN
 import 'package:flutter/material.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
+import 'package:http/http.dart' as http;       // <-- TAMBAHAN
 
 void main() => runApp(const KontainerMonitorApp());
 
@@ -70,14 +72,14 @@ class Telemetry {
 class Kontainer {
   final String series;
   String tujuan;
-  String isi;                      // <-- BARU: muatan/isi kontainer
+  String isi;                      // <-- tetap
   String PT;
   Telemetry t = Telemetry();
   Kontainer({
     required this.series,
     required this.tujuan,
-    this.isi = '-',       
-    required this.PT,        // default "-"
+    this.isi = '-',
+    required this.PT,
   });
 }
 
@@ -89,7 +91,7 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  // ---- MQTT config (ubah sesuai punyamu) ----
+  // ---- MQTT config (tetap) ----
   final String brokerHost = '172.20.10.5';
   final int brokerPort = 1883;
   final String baseTopic = 'supplychain/containers'; // subscribe "baseTopic/#"
@@ -103,13 +105,36 @@ class _DashboardPageState extends State<DashboardPage> {
   // query pencarian
   String _searchQuery = '';
 
+  // ---- InfluxDB config (TAMBAHAN) ----
+  final String influxBaseUrl = 'http://127.0.0.1:8086';
+  final String influxOrg     = 'my-org';
+  final String influxBucket  = 'smart-ecoport';
+  final String influxToken   = 'my-super-token';
+  final Duration influxPollEvery = const Duration(seconds: 5);
+  final String influxRange = '-24h'; // ambil 10 menit terakhir
+  Timer? _influxTimer;
+
   @override
   void initState() {
     super.initState();
-    _connectMqtt();
+    _connectMqtt();            // (tetap) MQTT
+    _startInfluxPolling();     // (TAMBAHAN) polling Influx
+  }
+
+  @override
+  void dispose() {
+    _influxTimer?.cancel();    // (TAMBAHAN)
+    super.dispose();
   }
 
   Future<void> _connectMqtt() async {
+    try {
+  final testResp = await http.get(Uri.parse('http://172.20.10.5:8086/health'));
+  debugPrint('Influx health check: ${testResp.statusCode} → ${testResp.body}');
+} catch (e) {
+  debugPrint('Influx health check error: $e');
+}
+
     final id = 'kontainer_monitor_${DateTime.now().millisecondsSinceEpoch}';
     final c = MqttServerClient(brokerHost, id)
       ..port = brokerPort
@@ -178,8 +203,8 @@ class _DashboardPageState extends State<DashboardPage> {
   void _addContainerDialog() {
     final seriesCtrl = TextEditingController();
     final tujuanCtrl = TextEditingController();
-    final isiCtrl = TextEditingController();   
-    final PTCtrl = TextEditingController();          // <-- BARU
+    final isiCtrl = TextEditingController();
+    final PTCtrl = TextEditingController();
 
     showDialog(
       context: context,
@@ -202,14 +227,14 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             ),
             const SizedBox(height: 8),
-            TextField(                               // <-- BARU
+            TextField(
               controller: isiCtrl,
               decoration: const InputDecoration(
                 labelText: 'Isi (Pakaian, Elektronik, dll.)',
               ),
             ),
             const SizedBox(height: 8),
-            TextField(                               // <-- BARU
+            TextField(
               controller: PTCtrl,
               decoration: const InputDecoration(
                 labelText: 'Perusahaan',
@@ -223,8 +248,8 @@ class _DashboardPageState extends State<DashboardPage> {
             onPressed: () {
               final s = seriesCtrl.text.trim();
               final t = tujuanCtrl.text.trim();
-              final i = isiCtrl.text.trim();        // <-- BARU
-              final p = PTCtrl.text.trim();        // <-- BARU
+              final i = isiCtrl.text.trim();
+              final p = PTCtrl.text.trim();
               if (s.isNotEmpty) {
                 setState(() {
                   _items.putIfAbsent(
@@ -232,13 +257,13 @@ class _DashboardPageState extends State<DashboardPage> {
                     () => Kontainer(
                       series: s,
                       tujuan: t.isEmpty ? '-' : t,
-                      isi: i.isEmpty ? '-' : i,      // <-- BARU
-                      PT: p.isEmpty ? '-' : i,
+                      isi: i.isEmpty ? '-' : i,
+                      PT: p.isEmpty ? '-' : i,  // (biarkan sesuai kode asalmu)
                     ),
                   )
                   ..tujuan = t.isEmpty ? '-' : t
-                  ..isi    = i.isEmpty ? '-' : i    // <-- BARU
-                  ..PT    = p.isEmpty ? '-' : p;    // <-- BARU
+                  ..isi    = i.isEmpty ? '-' : i
+                  ..PT    = p.isEmpty ? '-' : p;
                 });
               }
               Navigator.pop(context);
@@ -366,6 +391,205 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
       ),
     );
+  }
+
+  /* ===================== Tambahan: Polling InfluxDB ===================== */
+
+  void _startInfluxPolling() {
+    _pullFromInflux(); // jalankan sekali
+    _influxTimer?.cancel();
+    _influxTimer = Timer.periodic(influxPollEvery, (_) => _pullFromInflux());
+  }
+
+  Future<void> _pullFromInflux() async {
+  final uri = Uri.parse('$influxBaseUrl/api/v2/query?org=$influxOrg');
+
+  // Ambil record terakhir per device, pivot jadi lebar
+  final flux = '''
+base = from(bucket: "$influxBucket")
+  |> range(start: $influxRange)
+  |> filter(fn: (r) => r._measurement == "telemetry")
+  |> filter(fn: (r) => r._field =~ /^(lat|lon|alt|speed|rssi|snr|sats|door|packetCounter)\$/)
+
+// Ambil NILAI TERAKHIR per device & per field (ini memisahkan tiap tipe dulu)
+lasts = base
+  |> group(columns: ["device", "_field"])
+  |> last()
+
+// Normalisasi tipe:
+// - door: bool -> 0.0 / 1.0
+// - selain door: paksa ke float (termasuk integer)
+norm = lasts
+  |> map(fn: (r) => ({
+      r with _value:
+        if r._field == "door"
+          then (if bool(v: r._value) then 1.0 else 0.0)
+          else float(v: r._value)
+    }))
+
+// Setelah semua jadi float, baru pivot
+norm
+  |> group(columns: ["device"])
+  |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["device","_time","lat","lon","alt","speed","rssi","snr","sats","door","packetCounter"])
+''';
+
+
+
+  try {
+    final resp = await http.post(
+      uri,
+      headers: {
+        'Authorization': 'Token $influxToken',
+        'Accept': 'application/csv',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'type': 'flux',
+        'query': flux,
+        'dialect': {
+          'header': true,
+          'annotations': ['datatype', 'group', 'default'],
+          'delimiter': ',',
+        },
+      }),
+    );
+
+    // 👇 Tambahkan tiga baris debug di sini:
+    debugPrint('INFLUX URL = $influxBaseUrl');
+    debugPrint('HTTP ${resp.statusCode}');
+    debugPrint(resp.body.split('\n').take(6).join('\n'));
+    // 👆 Baris ini akan tampil di Output/Console untuk memeriksa koneksi dan hasil query.
+
+    if (resp.statusCode >= 200 && resp.statusCode < 300) {
+      _applyInfluxCsv(resp.body);
+    } else {
+      // diamkan agar tidak spam UI
+      // debugPrint('Influx query error ${resp.statusCode}: ${resp.body}');
+    }
+  } catch (e) {
+    // jaringan putus, dll. biarkan polling berikutnya coba lagi
+    debugPrint('Influx query exception: $e'); // 👈 boleh aktifkan juga baris ini
+  }
+}
+
+  void _applyInfluxCsv(String csv) {
+    final lines = const LineSplitter().convert(csv);
+    if (lines.isEmpty) return;
+
+    // cari header kolom terakhir
+    int headerIdx = -1;
+    for (int i = 0; i < lines.length; i++) {
+      final l = lines[i];
+      if (l.isEmpty || l.startsWith('#')) continue;
+      if (l.contains('device') && l.contains('_time')) headerIdx = i;
+    }
+    if (headerIdx == -1 || headerIdx + 1 >= lines.length) return;
+
+    final header = lines[headerIdx].split(',');
+    int idxOf(String name) => header.indexOf(name);
+
+    final iDevice = idxOf('device');
+    final iTime   = idxOf('_time');
+    final iLat    = idxOf('lat');
+    final iLon    = idxOf('lon');
+    final iAlt    = idxOf('alt');
+    final iSpd    = idxOf('speed');
+    final iRssi   = idxOf('rssi');
+    final iSnr    = idxOf('snr');
+    final iSats   = idxOf('sats');
+    final iDoor   = idxOf('door');
+    final iPkt    = idxOf('packetCounter');
+
+    if ([iDevice, iTime].any((i) => i < 0)) return;
+
+    final Map<String, Telemetry> latest = {};
+
+    for (int i = headerIdx + 1; i < lines.length; i++) {
+      final l = lines[i];
+      if (l.isEmpty || l.startsWith('#')) continue;
+      final cols = _splitCsvLine(l, header.length);
+      if (cols.length < header.length) continue;
+
+      final dev = cols[iDevice];
+      if (dev.isEmpty) continue;
+
+      double? _toD(String s) => double.tryParse(s);
+      int?    _toI(String s) => int.tryParse(s);
+      bool?   _toB(String s) {
+        final ls = s.toLowerCase();
+        if (ls == 'true') return true;
+        if (ls == 'false') return false;
+        final n = int.tryParse(ls);
+        if (n != null) return n != 0;
+        return null;
+      }
+
+      final t = Telemetry();
+      t.timeUTC       = iTime >= 0 ? cols[iTime] : null;
+      t.lat           = iLat  >= 0 ? _toD(cols[iLat])   : null;
+      t.lon           = iLon  >= 0 ? _toD(cols[iLon])   : null;
+      t.alt           = iAlt  >= 0 ? _toD(cols[iAlt])   : null;
+      t.speed         = iSpd  >= 0 ? _toD(cols[iSpd])   : null;
+      t.rssi          = iRssi >= 0 ? _toI(cols[iRssi])  : null;
+      t.snr           = iSnr  >= 0 ? _toD(cols[iSnr])   : null;
+      t.sats          = iSats >= 0 ? _toI(cols[iSats])  : null;
+      t.door          = iDoor >= 0 ? _toB(cols[iDoor])  : null;
+      t.packetCounter = iPkt  >= 0 ? _toI(cols[iPkt])   : null;
+
+      latest[dev] = t; // last() per device
+    }
+
+    if (latest.isEmpty) return;
+
+    // merge ke state tanpa mengubah algoritma list/card
+    setState(() {
+      latest.forEach((series, tel) {
+        final item = _items.putIfAbsent(
+          series,
+          () => Kontainer(series: series, tujuan: '-', isi: '-', PT: '-'),
+        );
+        final j = <String, dynamic>{
+          'packetCounter': tel.packetCounter,
+          'lat': tel.lat,
+          'lon': tel.lon,
+          'altitude': tel.alt,
+          'speed': tel.speed,
+          'rssi': tel.rssi,
+          'snr': tel.snr,
+          'satellites': tel.sats,
+          'timeUTC': tel.timeUTC,
+          'door': tel.door,
+        }..removeWhere((k, v) => v == null);
+        item.t.mergeFromJson(j);
+      });
+    });
+  }
+
+  // parser CSV sederhana yang handle quotes
+  List<String> _splitCsvLine(String line, int expected) {
+    final List<String> out = [];
+    final sb = StringBuffer();
+    bool inQuotes = false;
+
+    for (int i = 0; i < line.length; i++) {
+      final ch = line[i];
+      if (ch == '"') {
+        if (inQuotes && i + 1 < line.length && line[i + 1] == '"') {
+          sb.write('"'); i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch == ',' && !inQuotes) {
+        out.add(sb.toString());
+        sb.clear();
+      } else {
+        sb.write(ch);
+      }
+    }
+    out.add(sb.toString());
+    while (out.length < expected) out.add('');
+    return out;
   }
 }
 

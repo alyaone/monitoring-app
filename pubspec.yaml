@@ -8,8 +8,9 @@ dependencies:
   flutter:
     sdk: flutter
   mqtt_client: ^10.2.0
+  http: ^1.2.2        # ← TAMBAH INI
 
 flutter:
   uses-material-design: true
   assets:
-    - assets/LogoBRIN.png      
+    - assets/LogoBRIN.png

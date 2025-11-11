@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:http/http.dart' as http;       // <-- TAMBAHAN
+import 'serial_config_page.dart';
 
 void main() => runApp(const KontainerMonitorApp());
 
@@ -12,11 +13,15 @@ class KontainerMonitorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Monitoring Posisi Kontainer',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.deepOrange),
-      home: const DashboardPage(),
-    );
+  title: 'Monitoring Posisi Kontainer',
+  debugShowCheckedModeBanner: false,
+  theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.deepOrange),
+  home: const DashboardPage(),
+  routes: {
+    '/serialConfig': (_) => const SerialConfigPage(),
+  },
+);
+
   }
 }
 
@@ -106,7 +111,7 @@ class _DashboardPageState extends State<DashboardPage> {
   String _searchQuery = '';
 
   // ---- InfluxDB config (TAMBAHAN) ----
-  final String influxBaseUrl = 'http://127.0.0.1:8086';
+  final String influxBaseUrl = 'http://127.20.10.5:8086';
   final String influxOrg     = 'my-org';
   final String influxBucket  = 'smart-ecoport';
   final String influxToken   = 'my-super-token';
@@ -302,95 +307,140 @@ class _DashboardPageState extends State<DashboardPage> {
         .toList();
 
     return Scaffold(
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(120),
-        child: Container(
-          color: Theme.of(context).colorScheme.surface,
-          padding: const EdgeInsets.only(top: 24, left: 16, right: 16),
-          child: Stack(
-            children: [
-              // Logo + judul di tengah
-              Align(
-                alignment: Alignment.topCenter,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.start,
-                  children: const [
-                    Image(image: AssetImage('assets/LogoBRIN.png'), height: 42),
-                    SizedBox(height: 6),
-                    Text(
-                      'Monitoring Posisi Kontainer',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: .3,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // 🔍 Search bar kecil di pojok kanan atas
-              Positioned(
-                top: 10,
-                right: 0,
-                child: SizedBox(
-                  width: 150,
-                  height: 36,
-                  child: TextField(
-                    onChanged: (v) => setState(() => _searchQuery = v),
-                    decoration: InputDecoration(
-                      hintText: 'Cari series...',
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      prefixIcon: const Icon(Icons.search, size: 18),
-                    ),
+  appBar: PreferredSize(
+    preferredSize: const Size.fromHeight(120),
+    child: Container(
+      color: Theme.of(context).colorScheme.surface,
+      padding: const EdgeInsets.only(top: 24, left: 16, right: 16),
+      child: Stack(
+        children: [
+          // Tombol menu di pojok kiri atas
+Positioned(
+  top: 6,
+  left: 0,
+  child: Builder(
+    builder: (ctx) => IconButton(
+      tooltip: 'Menu',
+      icon: const Icon(Icons.menu, size: 28),
+      onPressed: () => Scaffold.of(ctx).openDrawer(),
+    ),
+  ),
+),
+
+          // Logo + judul di tengah
+          Align(
+            alignment: Alignment.topCenter,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.start,
+              children: const [
+                Image(image: AssetImage('assets/LogoBRIN.png'), height: 42),
+                SizedBox(height: 6),
+                Text(
+                  'Monitoring Posisi Kontainer',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: .3,
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ),
-
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: filteredItems.isEmpty
-              ? const Center(
-                  child: Text('Belum ada kontainer. Tekan tombol + untuk menambah.'),
-                )
-              : ListView.separated(
-                  itemCount: filteredItems.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 10),
-                  itemBuilder: (_, i) {
-                    final k = filteredItems[i];
-                    return _ContainerCard(
-                      data: k,
-                      borderColor: orange,
-                      onDelete: () => _confirmDelete(k.series),
-                      compact: true, // ringkas (2 baris)
-                    );
-                  },
+          // 🔍 Search bar kecil di pojok kanan atas
+          Positioned(
+            top: 10,
+            right: 0,
+            child: SizedBox(
+              width: 150,
+              height: 36,
+              child: TextField(
+                onChanged: (v) => setState(() => _searchQuery = v),
+                decoration: InputDecoration(
+                  hintText: 'Cari series...',
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  prefixIcon: const Icon(Icons.search, size: 18),
                 ),
-        ),
+              ),
+            ),
+          ),
+        ],
       ),
+    ),
+  ),
 
-      floatingActionButton: FloatingActionButton(
-        onPressed: _addContainerDialog,
-        child: const Icon(Icons.add),
+  // ✅ Tambahkan Drawer di sini
+  drawer: Drawer(
+    child: SafeArea(
+      child: ListView(
+        children: [
+          const DrawerHeader(
+            child: Text(
+              'Selamat Datang!',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.dashboard),
+            title: const Text('Dashboard'),
+            onTap: () => Navigator.pop(context), // tutup drawer
+          ),
+          ListTile(
+            leading: const Icon(Icons.usb),
+            title: const Text('GUI Transmitter'),
+            subtitle: const Text('Kirim JSON ke ESP32'),
+            onTap: () {
+              Navigator.pop(context); // tutup drawer
+              Navigator.pushNamed(context, '/serialConfig'); // buka halaman baru
+            },
+          ),
+        ],
       ),
+    ),
+  ),
 
-      bottomNavigationBar: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-        child: FilledButton.icon(
-          onPressed: _connected ? null : _connectMqtt,
-          icon: Icon(_connected ? Icons.cloud_done : Icons.cloud_off),
-          label: const Text('Reconnect MQTT'),
-        ),
-      ),
-    );
+  // ====== sisanya tetap ======
+  body: SafeArea(
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: filteredItems.isEmpty
+          ? const Center(
+              child: Text('Belum ada kontainer. Tekan tombol + untuk menambah.'),
+            )
+          : ListView.separated(
+              itemCount: filteredItems.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (_, i) {
+                final k = filteredItems[i];
+                return _ContainerCard(
+                  data: k,
+                  borderColor: orange,
+                  onDelete: () => _confirmDelete(k.series),
+                  compact: true, // ringkas (2 baris)
+                );
+              },
+            ),
+    ),
+  ),
+
+  floatingActionButton: FloatingActionButton(
+    onPressed: _addContainerDialog,
+    child: const Icon(Icons.add),
+  ),
+
+  bottomNavigationBar: Padding(
+    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+    child: FilledButton.icon(
+      onPressed: _connected ? null : _connectMqtt,
+      icon: Icon(_connected ? Icons.cloud_done : Icons.cloud_off),
+      label: const Text('Reconnect MQTT'),
+    ),
+  ),
+);
+
   }
 
   /* ===================== Tambahan: Polling InfluxDB ===================== */

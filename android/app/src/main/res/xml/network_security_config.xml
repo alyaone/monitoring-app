@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+  <domain-config cleartextTrafficPermitted="true">
+    <!-- ganti IP di bawah dengan IP servermu -->
+    <domain includeSubdomains="true">172.20.10.5</domain>
+    <!-- opsional, kalau suatu saat pakai hostname -->
+    <domain includeSubdomains="true">localhost</domain>
+    <domain includeSubdomains="true">127.0.0.1</domain>
+  </domain-config>
+</network-security-config>

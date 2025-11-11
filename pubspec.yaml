@@ -9,8 +9,19 @@ dependencies:
     sdk: flutter
   mqtt_client: ^10.2.0
   http: ^1.2.2        # ← TAMBAH INI
+  usb_serial: ^0.5.2
+  flutter_libserialport: ^0.6.0 
 
 flutter:
   uses-material-design: true
   assets:
     - assets/LogoBRIN.png
+    - assets/icon.png
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.13.1
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon.png"
+

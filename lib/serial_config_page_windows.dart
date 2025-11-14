@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
+import 'services/config_store.dart';
+
 
 /// Halaman konfigurasi via COM port (Windows)
 class SerialConfigPage extends StatefulWidget {
@@ -30,6 +32,42 @@ class _SerialConfigPageState extends State<SerialConfigPage> {
   // ==== Log ====
   final List<String> _logs = [];
   final ScrollController _logCtrl = ScrollController();
+
+  // === Buffer & parser RX ===
+final StringBuffer _rxBuf = StringBuffer();
+
+String _sanitizeLine(String s) {
+  // buang ANSI escape, CR, backspace, dan kontrol non-printable
+  s = s.replaceAll(RegExp(r'\x1B\[[0-9;]*[A-Za-z]'), ''); // ESC[…cmd]
+  s = s.replaceAll('\r', '').replaceAll('\b', '');
+  s = s.replaceAll(RegExp(r'[\x00-\x08\x0B-\x1F\x7F]'), '');
+  return s;
+}
+
+void _onSerialBytes(Uint8List data) {
+  // decode; kalau masih aneh, ganti ke latin1.decode(data)
+  final chunk = const Utf8Decoder(allowMalformed: true).convert(data);
+  _rxBuf.write(chunk);
+
+  // potong per baris (terima \n ATAU \r sebagai pemisah)
+  while (true) {
+    final t = _rxBuf.toString();
+    final iN = t.indexOf('\n');
+    final iR = t.indexOf('\r');
+    int cut = -1;
+    if (iN >= 0 && iR >= 0) cut = (iN < iR) ? iN : iR;
+    else cut = (iN >= 0) ? iN : iR;
+    if (cut < 0) break;
+
+    final line = t.substring(0, cut);
+    final rest = t.substring(cut + 1);
+    _rxBuf..clear()..write(rest);
+
+    final cleaned = _sanitizeLine(line);
+    if (cleaned.trim().isNotEmpty) _addLog('RX ← $cleaned');
+  }
+}
+
 
   String _ts() {
   final n = DateTime.now();
@@ -80,46 +118,63 @@ void _addLog(String s) {
 
   // === Koneksi ke COM port ===
   Future<void> _connect() async {
-    if (_selectedPort == null) {
-      _addLog('[ERR] Tidak ada port terpilih.');
+  if (_selectedPort == null) { _addLog('[ERR] Tidak ada port terpilih.'); return; }
+
+  await _disconnect();
+  try {
+    _port = SerialPort(_selectedPort!);
+    if (!_port!.openReadWrite()) {
+      _addLog('[ERR] Gagal membuka port $_selectedPort');
+      _port = null;
       return;
     }
 
-    await _disconnect(); // pastikan tidak double connect
+    // 1) Set konfigurasi port
+    final cfg = SerialPortConfig()
+      ..baudRate = _baud
+      ..bits = 8
+      ..stopBits = 1
+      ..parity = 0
+      ..setFlowControl(SerialPortFlowControl.none);
+    _port!.config = cfg;
+
+    // 2) Beri waktu “boot spew” lewat lalu KURAS buffer awal
+    await Future.delayed(const Duration(milliseconds: 800));
     try {
-      _port = SerialPort(_selectedPort!);
-      if (!_port!.openReadWrite()) {
-        _addLog('[ERR] Gagal membuka port $_selectedPort');
-        _port = null;
-        return;
+      final t0 = DateTime.now();
+      while (DateTime.now().difference(t0).inMilliseconds < 400) {
+        final avail = _port!.bytesAvailable;
+        if (avail > 0) {
+          _port!.read(avail, timeout: 10); // discard
+        }
+        await Future.delayed(const Duration(milliseconds: 20));
       }
-
-      // Set parameter port
-      _port!.config.baudRate = _baud;
-      _port!.config.bits = 8;
-      _port!.config.stopBits = 1;
-      _port!.config.parity = 0;
-
-      // Reader stream untuk RX data
-      _reader = SerialPortReader(_port!);
-      _reader!.stream.listen(
-        (Uint8List data) {
-          final text = utf8.decode(data, allowMalformed: true);
-          for (final line in const LineSplitter().convert(text)) {
-            _addLog('RX ← $line');
-          }
-        },
-        onError: (e) => _addLog('[ERR] $e'),
-        onDone: () => setState(() => _connected = false),
-      );
-
-      setState(() => _connected = true);
-      _addLog('[OK] Connected to $_selectedPort @ $_baud bps');
-    } catch (e) {
-      _addLog('[ERR] $e');
-      _disconnect();
+    } catch (_) {
+      // aman diabaikan kalau platform tak mendukung
     }
+
+    // 3) Pasang reader setelah buffer bersih
+final start = DateTime.now();
+_reader = SerialPortReader(_port!, timeout: 80);
+_reader!.stream.listen(
+  (Uint8List data) {
+    // lewati burst awal ±200 ms
+    if (DateTime.now().difference(start).inMilliseconds < 200) return;
+    _onSerialBytes(data); // ✅ panggil fungsi parser baru
+  },
+  onError: (e) => _addLog('[ERR] $e'),
+  onDone:  () => setState(() => _connected = false),
+);
+
+
+    setState(() => _connected = true);
+    _addLog('[OK] Connected to $_selectedPort @ $_baud bps');
+  } catch (e) {
+    _addLog('[ERR] $e');
+    _disconnect();
   }
+}
+
 
   // === Putuskan koneksi ===
   Future<void> _disconnect() async {
@@ -220,11 +275,11 @@ void _addLog(String s) {
               title: 'Data Konfigurasi',
               child: Column(
                 children: [
-                  _Field(label: 'Perusahaan (≤31)', controller: _perusahaan, maxLen: 31, hint: 'PT CHATGPT Yogyakarta'),
+                  _Field(label: 'Perusahaan (≤20)', controller: _perusahaan, maxLen: 31, hint: 'PT CHATGPT Yogyakarta'),
                   const SizedBox(height: 8),
-                  _Field(label: 'Tujuan (≤31)', controller: _tujuan, maxLen: 31, hint: 'Yogyakarta'),
+                  _Field(label: 'Tujuan (≤14)', controller: _tujuan, maxLen: 31, hint: 'Yogyakarta'),
                   const SizedBox(height: 8),
-                  _Field(label: 'Isi (≤95)', controller: _isi, maxLen: 95, hint: 'Alat Elektronik'),
+                  _Field(label: 'Isi (≤16)', controller: _isi, maxLen: 95, hint: 'Alat Elektronik'),
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -233,10 +288,19 @@ void _addLog(String s) {
                         child: Text('Kirim ke ESP32'),
                       ),
                       const SizedBox(width: 12),
-                      FilledButton.tonal(
-                        onPressed: () => _addLog('[INFO] Isian disimpan lokal (contoh).'),
-                        child: Text('Simpan Isian'),
-                      ),
+                      // ...
+FilledButton.tonal(
+  onPressed: () async {
+    await ConfigStore.save(
+      perusahaan: _perusahaan.text.trim(),
+      tujuan: _tujuan.text.trim(),
+      isi: _isi.text.trim(),
+    );
+    _addLog('[INFO] Isian disimpan permanen.');
+  },
+  child: Text('Simpan Isian'),
+),
+
                     ],
                   ),
                 ],
@@ -246,10 +310,12 @@ void _addLog(String s) {
             const SizedBox(height: 10),
 
             // ======== Bagian 3: Log (full sampai bawah) ========
+// ======== Bagian 3: Log (full sampai bawah) ========
+// ======== Bagian 3: Log (full sampai bawah) ========
 Expanded(
   child: _Section(
     title: 'Log',
-    child: Expanded( // <- penting: biar ListView mengisi _Section
+    child: Expanded(
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
@@ -261,10 +327,26 @@ Expanded(
           child: ListView.builder(
   controller: _logCtrl,
   itemCount: _logs.length,
-  itemBuilder: (_, i) => Text(
-    _logs[i],
-    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-    softWrap: true,
+  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+  itemBuilder: (_, i) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Row(
+      children: [
+        Expanded( // <- kunci: paksa selebar box
+          child: SelectableText(
+            _logs[i],
+            maxLines: null,                      // boleh multi-line
+            textAlign: TextAlign.left,
+            textWidthBasis: TextWidthBasis.parent,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 12,
+              height: 1.2,
+            ),
+          ),
+        ),
+      ],
+    ),
   ),
 ),
 
@@ -273,7 +355,6 @@ Expanded(
     ),
   ),
 ),
-
 
           ],
         ),

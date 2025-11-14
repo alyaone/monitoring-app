@@ -5,6 +5,8 @@ import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:http/http.dart' as http;       // <-- TAMBAHAN
 import 'serial_config_page.dart';
+import 'home_page.dart';  // ⬅ file di poin 2
+import 'services/config_store.dart';
 
 void main() => runApp(const KontainerMonitorApp());
 
@@ -67,8 +69,8 @@ class Telemetry {
         door = doorRaw != 0;
       } else {
         final s = doorRaw.toString().toLowerCase();
-        if (['open','opened','true','1'].contains(s)) door = true;
-        if (['close','closed','false','0'].contains(s)) door = false;
+        if (['open','opened','true','0'].contains(s)) door = true;
+        if (['close','closed','false','1'].contains(s)) door = false;
       }
     }
   }
@@ -97,7 +99,7 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   // ---- MQTT config (tetap) ----
-  final String brokerHost = '172.20.10.5';
+  final String brokerHost = '192.168.137.1';
   final int brokerPort = 1883;
   final String baseTopic = 'supplychain/containers'; // subscribe "baseTopic/#"
 
@@ -111,7 +113,7 @@ class _DashboardPageState extends State<DashboardPage> {
   String _searchQuery = '';
 
   // ---- InfluxDB config (TAMBAHAN) ----
-  final String influxBaseUrl = 'http://127.20.10.5:8086';
+  final String influxBaseUrl = 'http://192.168.137.1:8086';
   final String influxOrg     = 'my-org';
   final String influxBucket  = 'smart-ecoport';
   final String influxToken   = 'my-super-token';
@@ -119,9 +121,28 @@ class _DashboardPageState extends State<DashboardPage> {
   final String influxRange = '-24h'; // ambil 10 menit terakhir
   Timer? _influxTimer;
 
+    // === nilai yang disimpan dari GUI / SerialConfigPage ===
+  String _cfgPerusahaan = '-';
+  String _cfgTujuan = '-';
+  String _cfgIsi = '-';
+
+  Future<void> _loadConfigFromDisk() async {
+    final m = await ConfigStore.load();
+    if (!mounted) return;
+    setState(() {
+      _cfgPerusahaan = (m['perusahaan'] ?? '').trim();
+      _cfgTujuan     = (m['tujuan'] ?? '').trim();
+      _cfgIsi        = (m['isi'] ?? '').trim();
+      if (_cfgPerusahaan.isEmpty) _cfgPerusahaan = '-';
+      if (_cfgTujuan.isEmpty)     _cfgTujuan     = '-';
+      if (_cfgIsi.isEmpty)        _cfgIsi        = '-';
+    });
+  }
+
   @override
   void initState() {
     super.initState();
+    _loadConfigFromDisk();  
     _connectMqtt();            // (tetap) MQTT
     _startInfluxPolling();     // (TAMBAHAN) polling Influx
   }
@@ -187,23 +208,73 @@ class _DashboardPageState extends State<DashboardPage> {
     return null;
   }
 
-  void _handleMessage(String topic, String payload) {
-    try {
-      final j = jsonDecode(payload) as Map<String, dynamic>;
-      final series = _extractSeries(topic, j);
-      if (series == null) return;
-
-      setState(() {
-        final item = _items.putIfAbsent(
-          series,
-          () => Kontainer(series: series, tujuan: '-', isi: '-', PT: '-'),
-        );
-        item.t.mergeFromJson(j);
-      });
-    } catch (_) {
-      // ignore invalid JSON
+    /// Cari key [targetKey] di mana pun di dalam JSON (Map / List), kembalikan string-nya.
+  String? _findStringKey(dynamic node, String targetKey) {
+    if (node is Map) {
+      if (node.containsKey(targetKey)) {
+        final v = node[targetKey];
+        if (v == null) return null;
+        final s = v.toString().trim();
+        return s.isEmpty ? null : s;
+      }
+      for (final value in node.values) {
+        final r = _findStringKey(value, targetKey);
+        if (r != null) return r;
+      }
+    } else if (node is List) {
+      for (final value in node) {
+        final r = _findStringKey(value, targetKey);
+        if (r != null) return r;
+      }
     }
+    return null;
   }
+  
+
+  void _handleMessage(String topic, String payload) {
+  try {
+    final j = jsonDecode(payload) as Map<String, dynamic>;
+    final series = _extractSeries(topic, j);
+    if (series == null) return;
+
+    setState(() {
+      // buat atau ambil kontainer yang sudah ada
+      final item = _items.putIfAbsent(
+  series,
+  () => Kontainer(
+    series: series,
+    tujuan: _cfgTujuan,
+    isi: _cfgIsi,
+    PT: _cfgPerusahaan,
+  ),
+);
+
+      // 1) update telemetry (lat, lon, rssi, dst.)
+      item.t.mergeFromJson(j);
+
+      // 2) update meta dari JSON (TUJUAN / ISI / PERUSAHAAN)
+      final tujuan = j['tujuan']?.toString();
+      if (tujuan != null && tujuan.isNotEmpty) {
+        item.tujuan = tujuan;
+      }
+
+      final isi = j['isi']?.toString();
+      if (isi != null && isi.isNotEmpty) {
+        item.isi = isi;
+      }
+
+      // kadang bisa "perusahaan" atau "company", tapi dari ESP32 kamu pakai "perusahaan"
+      final pt = j['perusahaan']?.toString() ?? j['company']?.toString();
+      if (pt != null && pt.isNotEmpty) {
+        item.PT = pt;
+      }
+    });
+  } catch (e) {
+    // kalau payload bukan JSON, diamkan saja
+    // debugPrint('Bad MQTT payload: $e');
+  }
+}
+
 
   void _addContainerDialog() {
     final seriesCtrl = TextEditingController();
@@ -263,7 +334,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       series: s,
                       tujuan: t.isEmpty ? '-' : t,
                       isi: i.isEmpty ? '-' : i,
-                      PT: p.isEmpty ? '-' : i,  // (biarkan sesuai kode asalmu)
+                      PT: p.isEmpty ? '-' : p,  // (biarkan sesuai kode asalmu)
                     ),
                   )
                   ..tujuan = t.isEmpty ? '-' : t
@@ -389,14 +460,15 @@ Positioned(
             onTap: () => Navigator.pop(context), // tutup drawer
           ),
           ListTile(
-            leading: const Icon(Icons.usb),
-            title: const Text('GUI Transmitter'),
-            subtitle: const Text('Kirim JSON ke ESP32'),
-            onTap: () {
-              Navigator.pop(context); // tutup drawer
-              Navigator.pushNamed(context, '/serialConfig'); // buka halaman baru
-            },
-          ),
+  leading: const Icon(Icons.usb),
+  title: const Text('GUI Transmitter'),
+  subtitle: const Text('Kirim JSON ke ESP32'),
+  onTap: () {
+    Navigator.pop(context); 
+    Navigator.pushNamed(context, '/serialConfig')
+        .then((_) => _loadConfigFromDisk());  // <-- habis balik dari GUI, baca config lagi
+  },
+),
         ],
       ),
     ),
@@ -596,9 +668,15 @@ norm
     setState(() {
       latest.forEach((series, tel) {
         final item = _items.putIfAbsent(
-          series,
-          () => Kontainer(series: series, tujuan: '-', isi: '-', PT: '-'),
-        );
+  series,
+  () => Kontainer(
+    series: series,
+    tujuan: _cfgTujuan,
+    isi: _cfgIsi,
+    PT: _cfgPerusahaan,
+  ),
+);
+
         final j = <String, dynamic>{
           'packetCounter': tel.packetCounter,
           'lat': tel.lat,
@@ -612,6 +690,11 @@ norm
           'door': tel.door,
         }..removeWhere((k, v) => v == null);
         item.t.mergeFromJson(j);
+        // Pastikan label selalu ikut config terbaru dari GUI
+item.tujuan = _cfgTujuan;
+item.isi    = _cfgIsi;
+item.PT     = _cfgPerusahaan;
+
       });
     });
   }
@@ -661,6 +744,17 @@ class _ContainerCard extends StatelessWidget {
     if (v is num) return (v is int) ? '$v' : v.toStringAsFixed(f);
     return v.toString();
   }
+  String _convertToWIB(String? utc) {
+  if (utc == null) return '-';
+  try {
+    final dt = DateTime.parse(utc).toUtc().add(const Duration(hours: 7));
+    return '${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')} '
+           '${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}:${dt.second.toString().padLeft(2,'0')} WIB';
+  } catch (_) {
+    return utc;
+  }
+}
+
 
   @override
   Widget build(BuildContext context) {
@@ -672,7 +766,7 @@ class _ContainerCard extends StatelessWidget {
 
     // Line 2: Paket & statistik
     final line2 =
-        '${t.timeUTC ?? '-'} | Paket: ${t.packetCounter ?? '-'}  | Lat: ${_s(t.lat)} | Long: ${_s(t.lon)} | Alt: ${_s(t.alt)} | Spd: ${_s(t.speed)} | Door: ${t.door == null ? '-' : (t.door! ? 'OPEN' : 'CLOSED')} | RSSI: ${_s(t.rssi)} | SNR: ${_s(t.snr)} | SAT: ${_s(t.sats)}';
+        '${_convertToWIB(t.timeUTC)} | Paket: ${t.packetCounter ?? '-'} | Lat: ${_s(t.lat)} | Long: ${_s(t.lon)} | Alt: ${_s(t.alt)} | Spd: ${_s(t.speed, f:3)} | Door: ${t.door == null ? '-' : (t.door! ? 'CLOSED' : 'OPEN')} | RSSI: ${_s(t.rssi)} | SNR: ${_s(t.snr)} | SAT: ${_s(t.sats)}';
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(14),

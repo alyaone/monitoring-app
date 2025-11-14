@@ -11,6 +11,7 @@ dependencies:
   http: ^1.2.2        # ← TAMBAH INI
   usb_serial: ^0.5.2
   flutter_libserialport: ^0.6.0 
+  shared_preferences: ^2.2.2
 
 flutter:
   uses-material-design: true

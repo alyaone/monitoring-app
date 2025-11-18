@@ -4,13 +4,13 @@ import 'package:flutter/material.dart';
 // Menghapus semua import usb_serial, transaction, dan dart:async/convert/typed_data
 // karena tidak ada koneksi serial yang dibuat di sini.
 
-class SerialConfigPage extends StatefulWidget {
-  const SerialConfigPage({super.key});
+class SerialConfigPageAndroid extends StatefulWidget {
+  const SerialConfigPageAndroid({super.key});
   @override
-  State<SerialConfigPage> createState() => _SerialConfigPageState();
+  State<SerialConfigPageAndroid> createState() => _SerialConfigPageState();
 }
 
-class _SerialConfigPageState extends State<SerialConfigPage> {
+class _SerialConfigPageState extends State<SerialConfigPageAndroid> {
   // Semua variabel dan metode koneksi/form/log dihapus 
   // atau tidak digunakan, termasuk _ts() dan _addLog().
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'services/config_store.dart';
 import 'serial_config_page_windows.dart'; // biar bisa buka halaman config
+import 'serial_config_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -44,7 +45,7 @@ class _HomePageState extends State<HomePage> {
               await Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const SerialConfigPage(),
+                  builder: (_) => SerialConfigPage(),
                 ),
               );
               _loadSaved();

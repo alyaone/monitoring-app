@@ -6,14 +6,14 @@ import 'services/config_store.dart';
 
 
 /// Halaman konfigurasi via COM port (Windows)
-class SerialConfigPage extends StatefulWidget {
-  const SerialConfigPage({super.key});
+class SerialConfigPageWindows extends StatefulWidget {
+  const SerialConfigPageWindows({super.key});
 
   @override
-  State<SerialConfigPage> createState() => _SerialConfigPageState();
+  State<SerialConfigPageWindows> createState() => _SerialConfigPageState();
 }
 
-class _SerialConfigPageState extends State<SerialConfigPage> {
+class _SerialConfigPageState extends State<SerialConfigPageWindows> {
   // ==== Variabel utama ====
   List<String> _ports = [];
   String? _selectedPort;

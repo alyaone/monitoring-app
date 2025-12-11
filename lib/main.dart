@@ -99,7 +99,7 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   // ---- MQTT config (tetap) ----
-  final String brokerHost = '192.168.8.100';
+  final String brokerHost = '192.168.8.102';
   final int brokerPort = 1883;
   final String baseTopic = 'supplychain/containers'; // subscribe "baseTopic/#"
 
@@ -113,7 +113,7 @@ class _DashboardPageState extends State<DashboardPage> {
   String _searchQuery = '';
 
   // ---- InfluxDB config (TAMBAHAN) ----
-  final String influxBaseUrl = 'http://192.168.8.100:8086';
+  final String influxBaseUrl = 'http://192.168.8.102:8086';
   final String influxOrg     = 'my-org';
   final String influxBucket  = 'smart-ecoport';
   final String influxToken   = 'my-super-token';

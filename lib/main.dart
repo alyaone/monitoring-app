@@ -117,6 +117,8 @@ class _DashboardPageState extends State<DashboardPage> {
   final String influxOrg     = 'my-org';
   final String influxBucket  = 'smart-ecoport';
   final String influxToken   = 'my-super-token';
+  final String influx2  = 'http://192.168.8.100:8086';
+  final String token2   = 'APUqhhFWkELLyNudnhnSqin-ji5gZAqVhUdF1m1uExDUYKaJFG_VeU4bfEbDbm3hezw3QY3JgbO2dHnyhFTUUQ==';
   final Duration influxPollEvery = const Duration(seconds: 5);
   final String influxRange = '-24h'; // ambil 10 menit terakhir
   Timer? _influxTimer;
@@ -524,71 +526,90 @@ Positioned(
   }
 
   Future<void> _pullFromInflux() async {
-  final uri = Uri.parse('$influxBaseUrl/api/v2/query?org=$influxOrg');
+  // helper to test server health before query
+  Future<bool> _isInfluxAlive(String baseUrl) async {
+    try {
+      final resp = await http.get(Uri.parse('$baseUrl/health'))
+          .timeout(const Duration(seconds: 3));
+      return resp.statusCode == 200 && resp.body.contains('pass');
+    } catch (_) {
+      return false;
+    }
+  }
 
-  // Ambil record terakhir per device, pivot jadi lebar
-    final flux = '''
+  // choose which Influx server to query
+  String activeUrl = influxBaseUrl;
+  String activeToken = influxToken;
+  if (!await _isInfluxAlive(influxBaseUrl)) {
+    debugPrint('⚠️  Primary InfluxDB unreachable, switching to backup...');
+    if (await _isInfluxAlive(influx2)) {
+      activeUrl = influx2;
+      activeToken = token2;
+    } else {
+      debugPrint('❌ Both InfluxDB servers unreachable.');
+      return;
+    }
+  }
+
+  final uri = Uri.parse('$activeUrl/api/v2/query?org=$influxOrg');
+
+  // Flux query (unchanged)
+  final flux = '''
 base = from(bucket: "$influxBucket")
   |> range(start: $influxRange)
   |> filter(fn: (r) => r._measurement == "telemetry")
   |> filter(fn: (r) => r._field =~ /^(lat|lon|alt|speed|rssi|snr|sats|door|packetCounter|isi|tujuanField|perusahaanField)\$/)
 
-
-// Ambil NILAI TERAKHIR per device & per field
 lasts = base
   |> group(columns: ["device", "_field"])
   |> last()
 
-// Samakan tipe: semua _value diubah ke string
 norm = lasts
-  |> map(fn: (r) => ({
-      r with _value: string(v: r._value)
-    }))
+  |> map(fn: (r) => ({ r with _value: string(v: r._value) }))
 
-// Pivot ke bentuk lebar
 norm
   |> group(columns: ["device"])
   |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
   |> keep(columns: ["device","_time","lat","lon","alt","speed","rssi","snr","sats","door","packetCounter","tujuanField","perusahaanField","isi"])
+  |> yield(name: "result")
 ''';
 
 
   try {
-    final resp = await http.post(
-      uri,
-      headers: {
-        'Authorization': 'Token $influxToken',
-        'Accept': 'application/csv',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode({
-        'type': 'flux',
-        'query': flux,
-        'dialect': {
-          'header': true,
-          'annotations': ['datatype', 'group', 'default'],
-          'delimiter': ',',
-        },
-      }),
-    );
+    final resp = await http
+        .post(
+          uri,
+          headers: {
+            'Authorization': 'Token $activeToken',
+            'Accept': 'application/csv',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'type': 'flux',
+            'query': flux,
+            'dialect': {
+              'header': true,
+              'annotations': ['datatype', 'group', 'default'],
+              'delimiter': ',',
+            },
+          }),
+        )
+        .timeout(const Duration(seconds: 6));
 
-    // 👇 Tambahkan tiga baris debug di sini:
-    debugPrint('INFLUX URL = $influxBaseUrl');
+    debugPrint('INFLUX URL = $activeUrl');
     debugPrint('HTTP ${resp.statusCode}');
-    debugPrint(resp.body.split('\n').take(6).join('\n'));
-    // 👆 Baris ini akan tampil di Output/Console untuk memeriksa koneksi dan hasil query.
+    debugPrint(resp.body.split('\n').take(5).join('\n'));
 
     if (resp.statusCode >= 200 && resp.statusCode < 300) {
       _applyInfluxCsv(resp.body);
     } else {
-      // diamkan agar tidak spam UI
-      // debugPrint('Influx query error ${resp.statusCode}: ${resp.body}');
+      debugPrint('Influx query error ${resp.statusCode}: ${resp.body}');
     }
   } catch (e) {
-    // jaringan putus, dll. biarkan polling berikutnya coba lagi
-    debugPrint('Influx query exception: $e'); // 👈 boleh aktifkan juga baris ini
+    debugPrint('Influx query exception: $e');
   }
 }
+
 
 void _applyInfluxCsv(String csv) {
   final lines = const LineSplitter().convert(csv);

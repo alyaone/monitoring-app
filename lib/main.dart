@@ -99,8 +99,8 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   // ---- MQTT config (tetap) ----
-  final String brokerHost = '192.168.8.102';
-  final int brokerPort = 1883;
+  final String brokerHost = '';
+  // final int brokerPort = 1883;
   final String baseTopic = 'supplychain/containers'; // subscribe "baseTopic/#"
 
   MqttServerClient? _client;
@@ -112,13 +112,19 @@ class _DashboardPageState extends State<DashboardPage> {
   // query pencarian
   String _searchQuery = '';
 
-  // ---- InfluxDB config (TAMBAHAN) ----
-  final String influxBaseUrl = 'http://192.168.8.102:8086';
-  final String influxOrg     = 'my-org';
-  final String influxBucket  = 'smart-ecoport';
-  final String influxToken   = 'my-super-token';
-  final String influx2  = 'http://192.168.8.100:8086';
-  final String token2   = 'APUqhhFWkELLyNudnhnSqin-ji5gZAqVhUdF1m1uExDUYKaJFG_VeU4bfEbDbm3hezw3QY3JgbO2dHnyhFTUUQ==';
+
+ // ---- Influx Cloud (primary) ----
+String influxBaseUrl = 'https://us-east-1-1.aws.cloud2.influxdata.com';
+String influxOrg     = 'e61369478fcf1a2a'; // <- orgID Cloud kamu
+String influxBucket  = 'smart-ecoport';
+String influxToken   = 'uMjkQNdQVH8F3RizGklsTbRBVwmF2BWu5YuwX6fVN1ljt5Fgi8aM-AXX-WalC7-9RVoIbd02l2GDxPiG88TOrw==';
+
+// ---- Local backup ----
+String influx2  = 'http://192.168.8.100:8086';
+String token2   = 'bYrJ1w4BbT9u4ubX4qfnG7XurS_z2af0LAQl_yS0PwWblRFQuVVvTit3V5gYjfC2Mi0A_dW1fVTgpQbdq1ZMrg==';
+String influxOrgLocal = 'd84c595d4398e17f'; // orgID lokal
+
+
   final Duration influxPollEvery = const Duration(seconds: 5);
   final String influxRange = '-24h'; // ambil 10 menit terakhir
   Timer? _influxTimer;
@@ -129,23 +135,53 @@ class _DashboardPageState extends State<DashboardPage> {
   String _cfgIsi = '-';
 
   Future<void> _loadConfigFromDisk() async {
-    final m = await ConfigStore.load();
-    if (!mounted) return;
-    setState(() {
-      _cfgPerusahaan = (m['perusahaan'] ?? '').trim();
-      _cfgTujuan     = (m['tujuan'] ?? '').trim();
-      _cfgIsi        = (m['isi'] ?? '').trim();
-      if (_cfgPerusahaan.isEmpty) _cfgPerusahaan = '-';
-      if (_cfgTujuan.isEmpty)     _cfgTujuan     = '-';
-      if (_cfgIsi.isEmpty)        _cfgIsi        = '-';
-    });
-  }
+  final m = await ConfigStore.load();
+  if (!mounted) return;
+  setState(() {
+    influxBaseUrl = (m['influxUrl1']?.isNotEmpty ?? false)
+        ? m['influxUrl1']!
+        : influxBaseUrl;
+
+    influxToken = (m['influxToken1']?.isNotEmpty ?? false)
+        ? m['influxToken1']!
+        : influxToken;
+
+    influx2 = (m['influxUrl2']?.isNotEmpty ?? false)
+        ? m['influxUrl2']!
+        : influx2;
+
+    token2 = (m['influxToken2']?.isNotEmpty ?? false)
+        ? m['influxToken2']!
+        : token2;
+
+    // ✅ jangan biarkan kosong!
+    influxOrg = (m['influxOrg']?.isNotEmpty ?? false)
+        ? m['influxOrg']!
+        : influxOrg;
+
+    influxBucket = (m['influxBucket']?.isNotEmpty ?? false)
+        ? m['influxBucket']!
+        : influxBucket;
+
+    _cfgPerusahaan = (m['perusahaan']?.trim().isNotEmpty ?? false)
+        ? m['perusahaan']!.trim()
+        : '-';
+    _cfgTujuan = (m['tujuan']?.trim().isNotEmpty ?? false)
+        ? m['tujuan']!.trim()
+        : '-';
+    _cfgIsi = (m['isi']?.trim().isNotEmpty ?? false)
+        ? m['isi']!.trim()
+        : '-';
+  });
+}
+
+
 
   @override
   void initState() {
     super.initState();
     _loadConfigFromDisk();  
-    _connectMqtt();            // (tetap) MQTT
+    // _connectMqtt();            // (tetap) MQTT
     _startInfluxPolling();     // (TAMBAHAN) polling Influx
   }
 
@@ -165,7 +201,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
     final id = 'kontainer_monitor_${DateTime.now().millisecondsSinceEpoch}';
     final c = MqttServerClient(brokerHost, id)
-      ..port = brokerPort
+      // ..port = brokerPort
       ..keepAlivePeriod = 30
       ..logging(on: false)
       ..onDisconnected = () => setState(() => _connected = false);
@@ -525,57 +561,98 @@ Positioned(
     _influxTimer = Timer.periodic(influxPollEvery, (_) => _pullFromInflux());
   }
 
-  Future<void> _pullFromInflux() async {
-  // helper to test server health before query
-  Future<bool> _isInfluxAlive(String baseUrl) async {
+Future<void> _pullFromInflux() async {
+  
+  // ---- Helper: Cek koneksi server ----
+  Future<bool> _isInfluxAlive(String baseUrl, String token, {bool isCloud = false}) async {
     try {
-      final resp = await http.get(Uri.parse('$baseUrl/health'))
-          .timeout(const Duration(seconds: 3));
-      return resp.statusCode == 200 && resp.body.contains('pass');
+      if (isCloud) {
+        final resp = await http.post(
+          Uri.parse('$baseUrl/api/v2/query'),
+          headers: {
+            'Authorization': 'Token $token',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'query': 'buckets()',
+            'type': 'flux',
+          }),
+        ).timeout(const Duration(seconds: 4));
+        return resp.statusCode == 200;
+      } else {
+        final resp = await http.get(Uri.parse('$baseUrl/health'))
+            .timeout(const Duration(seconds: 3));
+        return resp.statusCode == 200 && resp.body.contains('pass');
+      }
     } catch (_) {
       return false;
     }
   }
 
-  // choose which Influx server to query
+  // ---- Pilih server aktif ----
   String activeUrl = influxBaseUrl;
   String activeToken = influxToken;
-  if (!await _isInfluxAlive(influxBaseUrl)) {
-    debugPrint('⚠️  Primary InfluxDB unreachable, switching to backup...');
-    if (await _isInfluxAlive(influx2)) {
+  bool isCloud = activeUrl.contains('influxdata.com');
+
+  final bool cloudAlive = await _isInfluxAlive(influxBaseUrl, influxToken, isCloud: true);
+  if (!cloudAlive) {
+    debugPrint('⚠️ Primary InfluxDB (Cloud) unreachable, switching to backup...');
+    final bool localAlive = await _isInfluxAlive(influx2, token2, isCloud: false);
+    if (localAlive) {
       activeUrl = influx2;
       activeToken = token2;
+      isCloud = false;
     } else {
       debugPrint('❌ Both InfluxDB servers unreachable.');
       return;
     }
   }
 
-  final uri = Uri.parse('$activeUrl/api/v2/query?org=$influxOrg');
+  if ((isCloud && (influxBucket.isEmpty || influxOrg.isEmpty)) ||
+    (!isCloud && influxBucket.isEmpty)) {
+  debugPrint('❌ Influx config incomplete! bucket or org missing.');
+  debugPrint('bucket="$influxBucket", org="$influxOrg"');
+  return;
+}
 
-  // Flux query (unchanged)
+  // ---- Siapkan query URL ----
+  final Uri uri = isCloud
+      ? Uri.parse('$activeUrl/api/v2/query')
+      : Uri.parse('$activeUrl/api/v2/query?orgID=$influxOrgLocal');
+
+  // ---- Flux Query ----
   final flux = '''
-base = from(bucket: "$influxBucket")
+from(bucket: "${isCloud ? influxBucket : influxBucket}")
   |> range(start: $influxRange)
   |> filter(fn: (r) => r._measurement == "telemetry")
-  |> filter(fn: (r) => r._field =~ /^(lat|lon|alt|speed|rssi|snr|sats|door|packetCounter|isi|tujuanField|perusahaanField)\$/)
-
-lasts = base
   |> group(columns: ["device", "_field"])
   |> last()
-
-norm = lasts
-  |> map(fn: (r) => ({ r with _value: string(v: r._value) }))
-
-norm
-  |> group(columns: ["device"])
   |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
   |> keep(columns: ["device","_time","lat","lon","alt","speed","rssi","snr","sats","door","packetCounter","tujuanField","perusahaanField","isi"])
-  |> yield(name: "result")
 ''';
 
+  // ---- Body untuk POST ----
+  final Object body = isCloud
+      ? {
+          "query": flux,
+          "dialect": {
+            "header": true,
+            "annotations": ["datatype", "group", "default"],
+            "delimiter": ",",
+          },
+          "org": influxOrg,
+        }
+      : {
+          "query": flux,
+          "type": "flux",
+        };
 
+  // ---- Kirim request ----
   try {
+    debugPrint('INFLUX URL = $activeUrl (cloud=$isCloud)');
+    debugPrint('URI SENT: $uri');
+    debugPrint('BODY SENT: ${jsonEncode(body)}');
+
     final resp = await http
         .post(
           uri,
@@ -584,19 +661,10 @@ norm
             'Accept': 'application/csv',
             'Content-Type': 'application/json',
           },
-          body: jsonEncode({
-            'type': 'flux',
-            'query': flux,
-            'dialect': {
-              'header': true,
-              'annotations': ['datatype', 'group', 'default'],
-              'delimiter': ',',
-            },
-          }),
+          body: jsonEncode(body),
         )
-        .timeout(const Duration(seconds: 6));
+        .timeout(const Duration(seconds: 8));
 
-    debugPrint('INFLUX URL = $activeUrl');
     debugPrint('HTTP ${resp.statusCode}');
     debugPrint(resp.body.split('\n').take(5).join('\n'));
 
@@ -609,6 +677,8 @@ norm
     debugPrint('Influx query exception: $e');
   }
 }
+
+
 
 
 void _applyInfluxCsv(String csv) {
